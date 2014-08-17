@@ -50,10 +50,16 @@ input_units = 'secs'
 hpcutoff = 120
 TR = 2.
 
-#Contrasts
+# Contrasts
 cont1 = ['Bundling>Control','T', ['Bundling','Control'],[1,-1]]
 cont2 = ['Scaling>Task-Even','T', ['Scaling','Control'],[1,-1]]
 contrasts = [cont1,cont2]
+
+# Templates
+mfxTemplateBrain = '/usr/local/fsl/data/standard/MNI152_T1_2mm.nii.gz'
+mniConfig        = '/usr/local/fsl/etc/flirtsch/T1_2_MNI152_2mm.cnf'
+mniMask          = '/usr/local/fsl/data/standard/MNI152_T1_2mm_brain_mask_dil.nii.gz'
+
 
 """
 =========
@@ -248,6 +254,14 @@ art = pe.MapNode(interface=ra.ArtifactDetect(use_differences = [True, False],
                                              mask_type = 'file'),
                  iterfield=['realigned_files', 'realignment_parameters'],
                  name="art")
+                
+# Register structurals to a mni reference brain 
+# leave the skulls on both brains 
+# But apply the trasnformation to striped functionals later               
+mniReg = pe.Node(interface=fsl.FNIRT(ref_file=mfxTemplateBrain,
+                                     config_file = mniConfig),
+                 name = 'mniReg')                 
+                 
 """
 Connections
 """
@@ -288,7 +302,7 @@ preproc.connect([(inputnode, nosestrip,[('struct','in_file')]),
                  (motion_correct, art, [('par_file','realignment_parameters')]),
                  (maskfunc2, art, [('out_file','realigned_files')]),
                  (dilatemask, art, [('out_file', 'mask_file')]),
-                 ])
+                 (inputnode,mniReg,[('struct','in_file')])])
 
 """
 ======================
@@ -407,8 +421,6 @@ withinSubject.connect([(preproc, modelfit,[('highpass.out_file', 'modelspec.func
 
                     ])
                     
-                    
-                    
 """
 =============
 META workflow
@@ -417,9 +429,9 @@ META workflow
 NODES
 """
 # Master NODE
-l1pipeline = pe.Workflow(name= "level1")
-l1pipeline.base_dir = workingdir
-l1pipeline.config = {"execution": {"crashdump_dir":crashRecordsDir}}
+masterpipeline = pe.Workflow(name= "MasterWorkfow")
+masterpipeline.base_dir = workingdir
+masterpipeline.config = {"execution": {"crashdump_dir":crashRecordsDir}}
 
 # Set up inforsource to iterate over 'subject_id's
 infosource = pe.Node(interface=util.IdentityInterface(fields=['subject_id']),
@@ -457,7 +469,7 @@ datasink.inputs.substitutions = [('_subject_id_', ''),
 CONNECTIONS
 """
 
-l1pipeline.connect([(infosource, datasource, [('subject_id', 'subject_id')]),
+masterpipeline.connect([(infosource, datasource, [('subject_id', 'subject_id')]),
                     (datasource, withinSubject, [('evs', 'modelfit.modelspec.event_files')]),
                     (datasource, withinSubject, [('struct','preproc.inputspec.struct'),
                                               ('func', 'preproc.inputspec.func'),
@@ -472,7 +484,16 @@ withinSubject.connect([(modelfit,datasink,[('modelestimate.param_estimates','reg
                       (modelfit,datasink,[('level1design.fsf_files', 'fsf_file')]),
                       (fixed_fx,datasink,[('flameo.tstats','tstats'),
                                           ('flameo.copes','copes'),
-                                          ('flameo.var_copes','varcopes')])
+                                          ('flameo.var_copes','varcopes')]),
+                      (preproc, datasink,[('coregister.out_file','Registered'),
+                                          ('mniReg.field_file','123.@field_file'),
+                                          ('mniReg.fieldcoeff_file','123.@fieldcoeff_file'),
+                                          ('mniReg.jacobian_file','123.@jacobian_file'),
+                                          ('mniReg.log_file','123.@log_file'),
+                                          ('mniReg.modulatedref_file','123.@modulatedref_file'),
+                                          ('mniReg.out_intensitymap_file','123.@out_intensitymap_file'),
+                                          ('mniReg.warped_file','123.@warped_file')
+                                          ]),
                        ])
 
 
@@ -484,9 +505,8 @@ Execute the pipeline
 
 if __name__ == '__main__':
     # Plot a network visualization of the pipline
-    l1pipeline.write_graph(graph2use='hierarchical')
+    masterpipeline.write_graph(graph2use='hierarchical')
 #    # Run the paipline using 1 CPUs
-#    outgraph = l1pipeline.run()    
+#    outgraph = masterpipeline.run()    
     # Run the paipline using 8 CPUs
-    outgraph = l1pipeline.run(plugin='MultiProc', plugin_args={'n_procs':8})
-    l2pipeline.run('MultiProc')
+    outgraph = masterpipeline.run(plugin='MultiProc', plugin_args={'n_procs':8})
