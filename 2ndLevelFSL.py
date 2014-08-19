@@ -30,10 +30,7 @@ import os                                    # system functions
 
 import nipype.interfaces.io as nio           # Data i/o
 import nipype.interfaces.fsl as fsl          # fsl
-import nipype.interfaces.utility as util     # utility
 import nipype.pipeline.engine as pe          # pypeline engine
-import nipype.algorithms.modelgen as model   # model generation
-import nipype.algorithms.rapidart as ra      # artifact detection
 
 from nipype import config
 config.enable_debug_mode()
@@ -77,8 +74,9 @@ cont2 = ['Scaling>Task-Even','T', ['Scaling','Control'],[1,-1]]
 contrasts = [cont1,cont2]
 
 # Templates
-mfxTemplateBrain = '/usr/local/fsl/data/standard/MNI152_T1_2mm.nii.gz'
-mniConfig        = '/usr/local/fsl/etc/flirtsch/T1_2_MNI152_2mm.cnf'
+mfxTemplateBrain        = '/usr/local/fsl/data/standard/MNI152_T1_2mm.nii.gz'
+strippedmfxTemplateBrain= '/usr/local/fsl/data/standard/MNI152_T1_2mm_brain.nii.gz'
+mniConfig               = '/usr/local/fsl/etc/flirtsch/T1_2_MNI152_2mm.cnf'
 
 """
 =========
@@ -102,7 +100,7 @@ def num_copes(files):
 
 '''
 ==============
-NODES
+META NODES
 ==============
 '''
 # MASTER node
@@ -111,34 +109,57 @@ masterpipeline.base_dir = workingdir + 'MFX'
 masterpipeline.config = {"execution": {"crashdump_dir":crashRecordsDir}}
 
 
-# random flow master Node
-random_fx = pe.Workflow(name='randomfx')
 
 # 2nd level dataGrabber
 contrast_ids = range(0,len(contrasts))
 l2source = pe.Node(nio.DataGrabber(infields=['con'],
-                                   outfields=['copes', 'varcopes']),
+                                   outfields=['copes','varcopes','matrix','field','fieldcoeff']),
                    name="l2source")
 
 l2source.inputs.base_directory = withinSubjectResults_dir
 l2source.inputs.template = '*'
-l2source.inputs.field_template= dict(copes=  '*/copes/*/contrast%d/cope1.nii.gz',
-                                     varcopes='*/varcopes/*/contrast%d/varcope1.nii.gz')
-l2source.inputs.template_args = dict(copes=  [['con']],
-                                     varcopes=[['con']])
+l2source.inputs.field_template= dict(copes=     '%s/copes/%s/contrast%d/cope1.nii.gz',
+                                     varcopes=  '%s/varcopes/%s/contrast%d/varcope1.nii.gz',
+                                     matrix =   '%s/registration/struct2mni/MATRIX/%s/*.mat',
+                                     field =    '%s/registration/struct2mni/FIELD/%s/*.nii.gz',
+                                     fieldcoeff='%s/registration/struct2mni/FIELDCOEFF/%s/*.nii.gz')
+l2source.inputs.template_args = dict(copes=     [[subject_list,subject_list,'con']],
+                                     varcopes=  [[subject_list,subject_list,'con']],
+                                     matrix =   [[subject_list,subject_list]],
+                                     field=     [[subject_list,subject_list]],
+                                     fieldcoeff=[[subject_list,subject_list]]
+                                     )
 # iterate over all contrast images
 
 l2source.iterables = [('con',contrast_ids)]
 l2source.inputs.sort_filelist = True
 
 
+
+'''
+===============
+Alignment Nodes
+===============
+'''
+aligncope = pe.MapNode(interface = fsl.ApplyWarp(ref_file = strippedmfxTemplateBrain),
+                       iterfield=['in_file','postmat','field_file'],
+                       name = 'aligncope')
+                        
+alignvarcope = pe.MapNode(interface = fsl.ApplyWarp(ref_file = strippedmfxTemplateBrain),
+                          iterfield=['in_file','postmat','field_file'],
+                          name = 'alignvarcope')
+
+'''
+==================
+Second Level Nodes
+==================
+'''
+
 #merge the copes and varcopes for each condition
-copemerge    = pe.MapNode(interface=fsl.Merge(dimension='t'),
-                          iterfield=['in_files'],
-                          name="copemerge")
-varcopemerge = pe.MapNode(interface=fsl.Merge(dimension='t'),
-                       iterfield=['in_files'],
-                       name="varcopemerge")
+copemerge    = pe.Node(interface=fsl.Merge(dimension='t'),
+                           name="copemerge")
+varcopemerge = pe.Node(interface=fsl.Merge(dimension='t'),
+                           name="varcopemerge")
 
 #level 2 model design files (there's one for each contrast)
 level2model = pe.Node(interface=fsl.L2Model(),
@@ -151,25 +172,34 @@ flameo = pe.MapNode(interface=fsl.FLAMEO(run_mode='fe',
                     iterfield=['cope_file','var_cope_file'])
 
 '''
+===========
 Connections
+===========
 '''
-
-
-random_fx.connect([(copemerge,flameo,[('merged_file','cope_file')]),
-                  (varcopemerge,flameo,[('merged_file','var_cope_file')]),
-                  (level2model,flameo, [('design_mat','design_file'),
-                                        ('design_con','t_con_file'),
-                                        ('design_grp','cov_split_file')]),
-                  ])
+masterpipeline.connect([(copemerge,flameo,[('merged_file','cope_file')]),
+                        (varcopemerge,flameo,[('merged_file','var_cope_file')]),
+                        (level2model,flameo, [('design_mat','design_file'),
+                                              ('design_con','t_con_file'),
+                                              ('design_grp','cov_split_file')]),
+                  ])  
                   
-masterpipeline.connect([(l2source,random_fx,[('copes','copemerge.in_files'),
-                                           ('varcopes','varcopemerge.in_files'),
-                                           (('copes', num_copes),'l2model.num_copes'),
-                                           ]),
-
-                    ])
+masterpipeline.connect([(l2source,aligncope,[('copes','in_file'),
+                                             ('fieldcoeff','field_file'),
+                                             ('matrix','postmat')
+                                             ]),
+                        (l2source,alignvarcope,[('varcopes','in_file'),
+                                                ('fieldcoeff','field_file'),
+                                                ('matrix','postmat')
+                                                ]),
+                       ])
+                    
+masterpipeline.connect([(aligncope,copemerge,[('out_file','in_files')]),
+                        (aligncope,level2model,[(('out_file', num_copes),'num_copes')]),
+                        (alignvarcope,varcopemerge,[('out_file','in_files')
+                                              ])
+                       ])
 
                     
 if __name__ == '__main__':
     masterpipeline.write_graph(graph2use='hierarchical')    
-    masterpipeline.run()
+    masterpipeline.run(plugin='MultiProc', plugin_args={'n_procs':8})

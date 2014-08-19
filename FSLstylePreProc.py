@@ -41,6 +41,7 @@ crashRecordsDir =         os.path.abspath('../fslWorkingDir/crashdumps')
 
 # subject directories
 subject_list = ['SID702','SID703','SID705','SID706','SID707','SID708','SID709','SID710'] 
+#subject_list = ['SID710'] 
 
 #List of functional scans
 func_scan= [1,2,3,4,5]
@@ -56,9 +57,10 @@ cont2 = ['Scaling>Task-Even','T', ['Scaling','Control'],[1,-1]]
 contrasts = [cont1,cont2]
 
 # Templates
-mfxTemplateBrain = '/usr/local/fsl/data/standard/MNI152_T1_2mm.nii.gz'
-mniConfig        = '/usr/local/fsl/etc/flirtsch/T1_2_MNI152_2mm.cnf'
-mniMask          = '/usr/local/fsl/data/standard/MNI152_T1_2mm_brain_mask_dil.nii.gz'
+mfxTemplateBrain        = '/usr/local/fsl/data/standard/MNI152_T1_2mm.nii.gz'
+strippedmfxTemplateBrain= '/usr/local/fsl/data/standard/MNI152_T1_2mm_brain.nii.gz'
+mniConfig               = os.path.abspath('T1_2_MNI152_2mm.cnf')
+mniMask                 = '/usr/local/fsl/data/standard/MNI152_T1_2mm_brain_mask_dil.nii.gz'
 
 
 """
@@ -255,12 +257,20 @@ art = pe.MapNode(interface=ra.ArtifactDetect(use_differences = [True, False],
                  iterfield=['realigned_files', 'realignment_parameters'],
                  name="art")
                 
-# Register structurals to a mni reference brain 
-# leave the skulls on both brains 
-# But apply the trasnformation to striped functionals later               
-mniReg = pe.Node(interface=fsl.FNIRT(ref_file=mfxTemplateBrain,
-                                     config_file = mniConfig),
-                 name = 'mniReg')                 
+# Register structurals to a mni reference brain
+# Use FLIRT first without skulls
+
+mniFLIRT = pe.Node(interface=fsl.FLIRT(reference = strippedmfxTemplateBrain),
+                   name = 'mniFLIRT')
+                   
+                
+# THen leave the skulls on both brains 
+# But apply the trasnformation to striped functionals later                                  
+mniFNIRT = pe.Node(interface=fsl.FNIRT(ref_file=mfxTemplateBrain,
+                                     config_file = mniConfig,
+                                     field_file = True,
+                                     fieldcoeff_file = True),
+                 name = 'mniFNIRT')                 
                  
 """
 Connections
@@ -302,7 +312,9 @@ preproc.connect([(inputnode, nosestrip,[('struct','in_file')]),
                  (motion_correct, art, [('par_file','realignment_parameters')]),
                  (maskfunc2, art, [('out_file','realigned_files')]),
                  (dilatemask, art, [('out_file', 'mask_file')]),
-                 (inputnode,mniReg,[('struct','in_file')])])
+                 (skullstrip,mniFLIRT,[('out_file','in_file')]),
+                 (mniFLIRT, mniFNIRT, [('out_matrix_file','affine_file')]),
+                 (inputnode,mniFNIRT,[('struct','in_file')])])
 
 """
 ======================
@@ -485,14 +497,12 @@ withinSubject.connect([(modelfit,datasink,[('modelestimate.param_estimates','reg
                       (fixed_fx,datasink,[('flameo.tstats','tstats'),
                                           ('flameo.copes','copes'),
                                           ('flameo.var_copes','varcopes')]),
-                      (preproc, datasink,[('coregister.out_file','Registered'),
-                                          ('mniReg.field_file','123.@field_file'),
-                                          ('mniReg.fieldcoeff_file','123.@fieldcoeff_file'),
-                                          ('mniReg.jacobian_file','123.@jacobian_file'),
-                                          ('mniReg.log_file','123.@log_file'),
-                                          ('mniReg.modulatedref_file','123.@modulatedref_file'),
-                                          ('mniReg.out_intensitymap_file','123.@out_intensitymap_file'),
-                                          ('mniReg.warped_file','123.@warped_file')
+                      (preproc, datasink,[('coregister.out_matrix_file','registration.func2strut.MATRIX'),
+                                          ('mniFLIRT.out_matrix_file','registration.struct2mni.MATRIX'),
+                                          ('mniFNIRT.fieldcoeff_file','registration.struct2mni.FIELDCOEFF'),  
+                                          ('mniFNIRT.field_file','registration.struct2mni.FIELD'),
+                                          ('mniFNIRT.log_file','registration.struct2mni.log_file'),
+                                          ('mniFNIRT.warped_file','registration.struct2mni.warped_struct')
                                           ]),
                        ])
 
