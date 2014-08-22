@@ -46,15 +46,17 @@ fsl.FSLCommand.set_default_output_type('NIFTI_GZ')
 data_dir =                os.path.abspath('../RawData')
 # Where the outputs goes
 withinSubjectResults_dir =os.path.abspath('../FFX')
+betweenSubjectResults_dir=os.path.abspath('../MFX')
 # Working Directory
 workingdir =              os.path.abspath('../fslWorkingDir/workingdir')
 # Crash Records
 crashRecordsDir =         os.path.abspath('../fslWorkingDir/crashdumps')
 
 # Templates
-mfxTemplateBrain = '/usr/local/fsl/data/standard/MNI152_T1_2mm.nii.gz'
-mniConfig        = '/usr/local/fsl/etc/flirtsch/T1_2_MNI152_2mm.cnf'
-mniMask          = '/usr/local/fsl/data/standard/MNI152_T1_2mm_brain_mask_dil.nii.gz'
+mfxTemplateBrain        = '/usr/local/fsl/data/standard/MNI152_T1_2mm.nii.gz'
+strippedmfxTemplateBrain= '/usr/local/fsl/data/standard/MNI152_T1_2mm_brain.nii.gz'
+mniConfig               = '/usr/local/fsl/etc/flirtsch/T1_2_MNI152_2mm.cnf'
+mniMask                 = '/usr/local/fsl/data/standard/MNI152_T1_2mm_brain_mask_dil.nii.gz'
 
 
 # subject directories
@@ -72,11 +74,6 @@ TR = 2.
 cont1 = ['Bundling>Control','T', ['Bundling','Control'],[1,-1]]
 cont2 = ['Scaling>Task-Even','T', ['Scaling','Control'],[1,-1]]
 contrasts = [cont1,cont2]
-
-# Templates
-mfxTemplateBrain        = '/usr/local/fsl/data/standard/MNI152_T1_2mm.nii.gz'
-strippedmfxTemplateBrain= '/usr/local/fsl/data/standard/MNI152_T1_2mm_brain.nii.gz'
-mniConfig               = '/usr/local/fsl/etc/flirtsch/T1_2_MNI152_2mm.cnf'
 
 """
 =========
@@ -130,10 +127,17 @@ l2source.inputs.template_args = dict(copes=     [[subject_list,subject_list,'con
                                      fieldcoeff=[[subject_list,subject_list]]
                                      )
 # iterate over all contrast images
-
 l2source.iterables = [('con',contrast_ids)]
 l2source.inputs.sort_filelist = True
 
+# DataSink
+#DataSink  --- stores important outputs
+MFXdatasink = pe.Node(interface=nio.DataSink(base_directory= betweenSubjectResults_dir,
+                                          parameterization = True # This line keeps the DataSink from adding an aditional level to the directory, I have no Idea why this works.
+                                          ),
+                   name="datasink")
+MFXdatasink.inputs.substitutions = [('_subject_id_', ''),
+                                 ('_flameo', 'contrast')]
 
 
 '''
@@ -141,11 +145,11 @@ l2source.inputs.sort_filelist = True
 Alignment Nodes
 ===============
 '''
-aligncope = pe.MapNode(interface = fsl.ApplyWarp(ref_file = strippedmfxTemplateBrain),
-                       iterfield=['in_file','postmat','field_file'],
+aligncope = pe.MapNode(interface = fsl.ApplyWarp(ref_file = mfxTemplateBrain),
+                       iterfield=['in_file','postmat'],
                        name = 'aligncope')
                         
-alignvarcope = pe.MapNode(interface = fsl.ApplyWarp(ref_file = strippedmfxTemplateBrain),
+alignvarcope = pe.MapNode(interface = fsl.ApplyWarp(ref_file = mfxTemplateBrain),
                           iterfield=['in_file','postmat','field_file'],
                           name = 'alignvarcope')
 
@@ -184,7 +188,7 @@ masterpipeline.connect([(copemerge,flameo,[('merged_file','cope_file')]),
                   ])  
                   
 masterpipeline.connect([(l2source,aligncope,[('copes','in_file'),
-                                             ('fieldcoeff','field_file'),
+#                                             ('fieldcoeff','field_file'),
                                              ('matrix','postmat')
                                              ]),
                         (l2source,alignvarcope,[('varcopes','in_file'),
@@ -199,7 +203,19 @@ masterpipeline.connect([(aligncope,copemerge,[('out_file','in_files')]),
                                               ])
                        ])
 
-                    
+masterpipeline.connect([(flameo,MFXdatasink,[('copes','copes'),
+                                             ('fstats','fstats'),
+                                             ('mrefvars','mrefvars'),
+                                             ('pes','pes'),
+                                             ('res4d','res4d'),
+                                             ('tstats','tstats'),
+                                             ('var_copes','var_copes'),
+                                             ('weights','weights'),
+                                             ('zfstats','zfstats'),
+                                             ('zstats','zstats'),
+                                             ])
+])
+        
 if __name__ == '__main__':
     masterpipeline.write_graph(graph2use='hierarchical')    
     masterpipeline.run(plugin='MultiProc', plugin_args={'n_procs':8})

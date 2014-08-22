@@ -21,6 +21,8 @@ import nipype.pipeline.engine as pe          # pypeline engine
 import nipype.algorithms.modelgen as model   # model generation
 import nipype.algorithms.rapidart as ra      # artifact detection
 
+from nipype import config
+config.enable_debug_mode()
 
 """
 ==============
@@ -40,8 +42,8 @@ workingdir =              os.path.abspath('../fslWorkingDir/workingdir')
 crashRecordsDir =         os.path.abspath('../fslWorkingDir/crashdumps')
 
 # subject directories
-subject_list = ['SID702','SID703','SID705','SID706','SID707','SID708','SID709','SID710'] 
-#subject_list = ['SID710'] 
+#subject_list = ['SID702','SID703','SID705','SID706','SID707','SID708','SID709','SID710'] 
+subject_list = ['SID710'] 
 
 #List of functional scans
 func_scan= [1,2,3,4,5]
@@ -143,7 +145,7 @@ extract_ref = pe.Node(interface=fsl.ExtractROI(t_size=1),
 #Realign the functional runs to the middle volume of the first run
 motion_correct = pe.MapNode(interface=fsl.MCFLIRT(save_mats = True,
                                                   save_plots = True),
-                            name='realign',
+                            name='motion_correct',
                             iterfield = ['in_file'])
                             
 #Plot the estimated motion parameters
@@ -231,12 +233,6 @@ highpass = pe.MapNode(interface=fsl.ImageMaths(suffix='_hpf',
                       iterfield=['in_file'],
                       name='highpass')
 
-#Generate a mean functional image from the first run
-meanfunc3 = pe.MapNode(interface=fsl.ImageMaths(op_string='-Tmean',
-                                                suffix='_mean'),
-                       iterfield=['in_file'],
-                       name='meanfunc3')
-
 #Skull Strip the structural image
 nosestrip = pe.Node(interface=fsl.BET(frac=0.3),
                     name = 'nosestrip')
@@ -244,7 +240,8 @@ skullstrip = pe.Node(interface=fsl.BET(mask = True, robust = True),
                      name = 'stripstruct')
 
 #register the mean functional image to the structural image
-coregister = pe.Node(interface=fsl.FLIRT(dof=6),
+coregister = pe.MapNode(interface=fsl.FLIRT(dof=6),
+                     iterfield=['in_file'],
                      name = 'coregister')
 
 #Find outliers based on deviations in intensity and/or movement.
@@ -272,49 +269,77 @@ mniFNIRT = pe.Node(interface=fsl.FNIRT(ref_file=mfxTemplateBrain,
                                      fieldcoeff_file = True),
                  name = 'mniFNIRT')                 
                  
+func2Struct = pe.MapNode(interface = fsl.ApplyWarp(),
+                         iterfield=['in_file','premat'],
+                         name = 'func2Struct')
+                         
+struct2MNI = pe.MapNode(interface = fsl.ApplyWarp(ref_file = mfxTemplateBrain),
+                         iterfield=['in_file'],
+                         name = 'struct2MNI')
+                         
+#Generate a mean functional (it's quicker to check a mean then a timesearies)
+meanfunc3 = pe.MapNode(interface=fsl.ImageMaths(op_string='-Tmean',
+                                                suffix='_mean'),
+                       iterfield=['in_file'],
+                       name='meanfunc3')
+                       
+#Generate a mean functional (it's quicker to check a mean then a timesearies)
+meanfunc4 = pe.MapNode(interface=fsl.ImageMaths(op_string='-Tmean',
+                                                suffix='_mean'),
+                       iterfield=['in_file'],
+                       name='meanfunc4')
+                 
 """
 Connections
 """
-preproc.connect(inputnode, 'func', img2float, 'in_file')
-preproc.connect(img2float, ('out_file', pickfirst), extract_ref, 'in_file')
-preproc.connect(inputnode, ('func', getmiddlevolume), extract_ref, 't_min')
-preproc.connect(img2float, 'out_file', motion_correct, 'in_file')
-preproc.connect(extract_ref, 'roi_file', motion_correct, 'ref_file')
-preproc.connect(motion_correct, 'par_file', plot_motion, 'in_file')
-preproc.connect(motion_correct, ('out_file', pickfirst), meanfunc, 'in_file')
-preproc.connect(meanfunc, 'out_file', meanfuncmask, 'in_file')
-preproc.connect(motion_correct, 'out_file', maskfunc, 'in_file')
-preproc.connect(meanfuncmask, 'mask_file', maskfunc, 'in_file2')
-preproc.connect(maskfunc, 'out_file', getthresh, 'in_file')
-preproc.connect(maskfunc, ('out_file', pickfirst), threshold, 'in_file')
-preproc.connect(getthresh, ('out_stat', getthreshop), threshold, 'op_string')
-preproc.connect(motion_correct, 'out_file', medianval, 'in_file')
-preproc.connect(threshold, 'out_file', medianval, 'mask_file')
-preproc.connect(threshold, 'out_file', dilatemask, 'in_file')
-preproc.connect(motion_correct, 'out_file', maskfunc2, 'in_file')
-preproc.connect(dilatemask, 'out_file', maskfunc2, 'in_file2')
-preproc.connect(maskfunc2, 'out_file', meanfunc2, 'in_file')
-preproc.connect(medianval, ('out_stat', getinormscale), intnorm, 'op_string')
-preproc.connect(meanfunc2,'out_file', mergenode, 'in1')
-preproc.connect(medianval,'out_stat', mergenode, 'in2')
-preproc.connect(maskfunc2, 'out_file', smooth, 'in_file')
-preproc.connect(medianval, ('out_stat', getbtthresh), smooth, 'brightness_threshold')
-preproc.connect(mergenode, ('out', getusans), smooth, 'usans')
-preproc.connect(smooth, 'smoothed_file', maskfunc3, 'in_file')
-preproc.connect(dilatemask, 'out_file', maskfunc3, 'in_file2')
-preproc.connect(maskfunc3, 'out_file', intnorm, 'in_file')
-preproc.connect(intnorm, 'out_file', highpass, 'in_file')
-preproc.connect(highpass, ('out_file', pickfirst), meanfunc3, 'in_file')
-preproc.connect([(inputnode, nosestrip,[('struct','in_file')]),
+preproc.connect([(inputnode, img2float,[('func', 'in_file')]),
+                 (img2float, extract_ref,[(('out_file', pickfirst), 'in_file')]),
+                 (inputnode, extract_ref, [(('func', getmiddlevolume), 't_min')]),
+                 (img2float, motion_correct, [('out_file', 'in_file')]),
+                 (extract_ref, motion_correct, [('roi_file', 'ref_file')]),
+                 (motion_correct, plot_motion, [('par_file', 'in_file')]),
+                 (motion_correct, meanfunc, [(('out_file', pickfirst), 'in_file')]),
+                 (meanfunc, meanfuncmask, [('out_file', 'in_file')]),
+                 (motion_correct, maskfunc, [('out_file', 'in_file')]),
+                 (meanfuncmask, maskfunc, [('mask_file', 'in_file2')]),
+                 (maskfunc, getthresh, [('out_file', 'in_file')]),
+                 (maskfunc, threshold, [(('out_file', pickfirst), 'in_file')]),
+                 (getthresh, threshold, [(('out_stat', getthreshop), 'op_string')]),
+                 (motion_correct, medianval, [('out_file', 'in_file')]),
+                 (threshold, medianval, [('out_file', 'mask_file')]),
+                 (threshold, dilatemask, [('out_file', 'in_file')]),
+                 (motion_correct, maskfunc2, [('out_file', 'in_file')]),
+                 (dilatemask, maskfunc2, [('out_file', 'in_file2')]),
+                 (maskfunc2, meanfunc2, [('out_file', 'in_file')]),
+                 (medianval, intnorm, [(('out_stat', getinormscale), 'op_string')]),
+                 (meanfunc2, mergenode, [('out_file', 'in1')]),
+                 (medianval, mergenode, [('out_stat', 'in2')]),
+                 (maskfunc2, smooth, [('out_file', 'in_file')]),
+                 (medianval, smooth, [(('out_stat', getbtthresh), 'brightness_threshold')]),
+                 (mergenode, smooth, [(('out', getusans), 'usans')]),
+                 (smooth, maskfunc3, [('smoothed_file', 'in_file')]),
+                 (dilatemask, maskfunc3, [('out_file', 'in_file2')]),
+                 (maskfunc3, intnorm, [('out_file', 'in_file')]),
+                 (intnorm, highpass, [('out_file', 'in_file')]),
+                 (inputnode, nosestrip,[('struct','in_file')]),
                  (nosestrip, skullstrip, [('out_file','in_file')]),
-                 (skullstrip, coregister,[('out_file','in_file')]),
-                 (meanfunc2, coregister,[(('out_file',pickfirst),'reference')]),
+                 (skullstrip, coregister,[('out_file','reference')]),
+                 (meanfunc2, coregister,[('out_file','in_file')]),
                  (motion_correct, art, [('par_file','realignment_parameters')]),
                  (maskfunc2, art, [('out_file','realigned_files')]),
                  (dilatemask, art, [('out_file', 'mask_file')]),
                  (skullstrip,mniFLIRT,[('out_file','in_file')]),
                  (mniFLIRT, mniFNIRT, [('out_matrix_file','affine_file')]),
-                 (inputnode,mniFNIRT,[('struct','in_file')])])
+                 (inputnode,mniFNIRT,[('struct','in_file')]),
+                 (highpass,func2Struct,[('out_file','in_file')]),
+                 (coregister,func2Struct,[('out_matrix_file','premat')]),
+                 (skullstrip,func2Struct,[('out_file','ref_file')]),
+                 (func2Struct,struct2MNI,[('out_file','in_file')]),
+                 (mniFLIRT,struct2MNI,[('out_matrix_file','premat')]),
+                 (mniFNIRT,struct2MNI,[('fieldcoeff_file','field_file')]),
+                 (func2Struct, meanfunc3, [('out_file', 'in_file')]),
+                 (struct2MNI, meanfunc4, [('out_file', 'in_file')])
+                 ])
 
 """
 ======================
@@ -395,7 +420,8 @@ level2model = pe.Node(interface=fsl.L2Model(),
                       name='l2model')
 
 #estimate a second level model
-flameo = pe.MapNode(interface=fsl.FLAMEO(run_mode='fe'), name="flameo",
+flameo = pe.MapNode(interface=fsl.FLAMEO(run_mode='fe',
+                                         mask_file = mniMask), name="flameo",
                     iterfield=['cope_file','var_cope_file'])
 
 '''
@@ -422,10 +448,9 @@ withinSubject = pe.Workflow(name='withinSubject')
 """
 CONNECTIONS
 """
-withinSubject.connect([(preproc, modelfit,[('highpass.out_file', 'modelspec.functional_runs'),
+withinSubject.connect([(preproc, modelfit,[('struct2MNI.out_file', 'modelspec.functional_runs'),
                                            ('art.outlier_files', 'modelspec.outlier_files'),
-                                           ('highpass.out_file','modelestimate.in_file')]),
-                      (preproc, fixed_fx, [('coregister.out_file', 'flameo.mask_file')]),
+                                           ('struct2MNI.out_file','modelestimate.in_file')]),
                       (modelfit, fixed_fx,[(('conestimate.copes', sort_copes),'copemerge.in_files'),
                                            (('conestimate.varcopes', sort_copes),'varcopemerge.in_files'),
                                            (('conestimate.copes', num_copes),'l2model.num_copes'),
@@ -502,7 +527,9 @@ withinSubject.connect([(modelfit,datasink,[('modelestimate.param_estimates','reg
                                           ('mniFNIRT.fieldcoeff_file','registration.struct2mni.FIELDCOEFF'),  
                                           ('mniFNIRT.field_file','registration.struct2mni.FIELD'),
                                           ('mniFNIRT.log_file','registration.struct2mni.log_file'),
-                                          ('mniFNIRT.warped_file','registration.struct2mni.warped_struct')
+                                          ('mniFNIRT.warped_file','registration.struct2mni.warped_struct'),
+                                          ('func2Struct.out_file','warps.func2Struct'),
+                                          ('struct2MNI.out_file','warps.struct2MNI')
                                           ]),
                        ])
 
@@ -516,7 +543,7 @@ Execute the pipeline
 if __name__ == '__main__':
     # Plot a network visualization of the pipline
     masterpipeline.write_graph(graph2use='hierarchical')
-#    # Run the paipline using 1 CPUs
-#    outgraph = masterpipeline.run()    
+    # Run the paipline using 1 CPUs
+    outgraph = masterpipeline.run()    
     # Run the paipline using 8 CPUs
-    outgraph = masterpipeline.run(plugin='MultiProc', plugin_args={'n_procs':8})
+#    outgraph = masterpipeline.run(plugin='MultiProc', plugin_args={'n_procs':8})
