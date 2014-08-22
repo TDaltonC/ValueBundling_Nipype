@@ -42,8 +42,8 @@ workingdir =              os.path.abspath('../fslWorkingDir/workingdir')
 crashRecordsDir =         os.path.abspath('../fslWorkingDir/crashdumps')
 
 # subject directories
-#subject_list = ['SID702','SID703','SID705','SID706','SID707','SID708','SID709','SID710'] 
-subject_list = ['SID710'] 
+subject_list = ['SID702','SID703','SID705','SID706','SID707','SID708','SID709','SID710'] 
+#subject_list = ['SID710'] 
 
 #List of functional scans
 func_scan= [1,2,3,4,5]
@@ -335,7 +335,7 @@ preproc.connect([(inputnode, img2float,[('func', 'in_file')]),
                  (coregister,func2Struct,[('out_matrix_file','premat')]),
                  (skullstrip,func2Struct,[('out_file','ref_file')]),
                  (func2Struct,struct2MNI,[('out_file','in_file')]),
-                 (mniFLIRT,struct2MNI,[('out_matrix_file','premat')]),
+#                 (mniFLIRT,struct2MNI,[('out_matrix_file','premat')]),
                  (mniFNIRT,struct2MNI,[('fieldcoeff_file','field_file')]),
                  (func2Struct, meanfunc3, [('out_file', 'in_file')]),
                  (struct2MNI, meanfunc4, [('out_file', 'in_file')])
@@ -544,6 +544,6 @@ if __name__ == '__main__':
     # Plot a network visualization of the pipline
     masterpipeline.write_graph(graph2use='hierarchical')
     # Run the paipline using 1 CPUs
-    outgraph = masterpipeline.run()    
+#    outgraph = masterpipeline.run()    
     # Run the paipline using 8 CPUs
-#    outgraph = masterpipeline.run(plugin='MultiProc', plugin_args={'n_procs':8})
+    outgraph = masterpipeline.run(plugin='MultiProc', plugin_args={'n_procs':8})
